@@ -100,13 +100,32 @@ async function refreshSolPrice() {
     console.error('[SOL] Failed to refresh price:', err.message || err);
   }
 }
+function formatEtTime(date) {
+  const d = date instanceof Date ? date : new Date(date);
+  try {
+    const options = {
+      timeZone: 'America/New_York',
+      hour12: true,
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    };
+    let t = d.toLocaleTimeString('en-US', options); // e.g. "6:30:21 PM"
+    t = t.replace(/ /g, '');                        // "6:30:21PM"
+    t = t.replace('AM', 'am').replace('PM', 'pm');  // "6:30:21pm"
+    return `${t} EST`;
+  } catch (e) {
+    return d.toISOString(); // fallback
+  }
+}
 
 function solPriceStatusLine() {
   if (!solPriceUsd || !solPriceUpdatedAt) {
     return 'SOL price: unavailable (will retry every 60s)';
   }
-  return `SOL price: $${solPriceUsd.toFixed(2)} (cached at ${solPriceUpdatedAt.toISOString()})`;
+  return `SOL price: $${solPriceUsd.toFixed(2)} (updated ${formatEtTime(solPriceUpdatedAt)})`;
 }
+
 
 // ----- Lobby cache and polling -----
 const lobbyCache = new Map(); // key -> { data, lastFetched: Date }
@@ -171,6 +190,40 @@ async function getLobbySnapshot(lobbyDef) {
   }
   return await fetchLobbyPlayers(lobbyDef);
 }
+async function runRegionRefreshLoop() {
+  for (const [guildId, cfg] of guildConfigs.entries()) {
+    try {
+      if (!cfg.refreshChannelId) continue;
+      if (!cfg.defaultRegion || !['us', 'eu'].includes(cfg.defaultRegion)) continue;
+
+      const guild = client.guilds.cache.get(guildId);
+      if (!guild) continue;
+
+      const channel = guild.channels.cache.get(cfg.refreshChannelId);
+      if (!channel || !channel.isTextBased()) continue;
+
+      const embeds = await buildRegionSummaryEmbeds(cfg.defaultRegion);
+      if (!embeds || embeds.length === 0) continue;
+
+      // delete previous refresh message if we have one
+      if (cfg.lastRefreshMessageId) {
+        try {
+          const prev = await channel.messages.fetch(cfg.lastRefreshMessageId);
+          if (prev) await prev.delete().catch(() => {});
+        } catch (e) {
+          // ignore (message deleted / no perms)
+        }
+      }
+
+      const msg = await channel.send({ embeds });
+      cfg.lastRefreshMessageId = msg.id;
+      // no ping: we send only embeds, no content
+    } catch (err) {
+      console.error('runRegionRefreshLoop error for guild', guildId, err.message || err);
+    }
+  }
+}
+
 
 // ----- Guild configuration (in-memory) -----
 // guildId -> {
@@ -194,15 +247,18 @@ function loadGuildConfigsFromDisk() {
     guildConfigs.clear();
 
     for (const [guildId, stored] of Object.entries(parsed)) {
-      const cfg = {
-        alertChannelId: stored.alertChannelId || null,
-        alertEnabled: stored.alertEnabled || {},
-        lastSeenPlayers: {},          // rebuilt at runtime
-        watches: new Map(),
-        nextWatchId: stored.nextWatchId || 1,
-        pingRoleId: stored.pingRoleId || null,
-        defaultRegion: stored.defaultRegion || null
-      };
+     const cfg = {
+  alertChannelId: stored.alertChannelId || null,
+  alertEnabled: stored.alertEnabled || {},
+  lastSeenPlayers: {},          // rebuilt at runtime
+  watches: new Map(),
+  nextWatchId: stored.nextWatchId || 1,
+  pingRoleId: stored.pingRoleId || null,
+  defaultRegion: stored.defaultRegion || null,
+  refreshChannelId: stored.refreshChannelId || null,
+  lastRefreshMessageId: null    // will be set at runtime
+};
+
 
       if (Array.isArray(stored.watches)) {
         for (const w of stored.watches) {
@@ -232,19 +288,21 @@ function saveGuildConfigsToDisk() {
     const obj = {};
     for (const [guildId, cfg] of guildConfigs.entries()) {
       obj[guildId] = {
-        alertChannelId: cfg.alertChannelId || null,
-        alertEnabled: cfg.alertEnabled || {},
-        watches: Array.from(cfg.watches.values()).map(w => ({
-          id: w.id,
-          lobbyKey: w.lobbyKey,
-          threshold: w.threshold,
-          intervalMinutes: w.intervalMinutes,
-          lastAlertAt: w.lastAlertAt ? w.lastAlertAt.toISOString() : null
-        })),
-        nextWatchId: cfg.nextWatchId || 1,
-        pingRoleId: cfg.pingRoleId || null,
-        defaultRegion: cfg.defaultRegion || null
-      };
+  alertChannelId: cfg.alertChannelId || null,
+  alertEnabled: cfg.alertEnabled || {},
+  watches: Array.from(cfg.watches.values()).map(w => ({
+    id: w.id,
+    lobbyKey: w.lobbyKey,
+    threshold: w.threshold,
+    intervalMinutes: w.intervalMinutes,
+    lastAlertAt: w.lastAlertAt ? w.lastAlertAt.toISOString() : null
+  })),
+  nextWatchId: cfg.nextWatchId || 1,
+  pingRoleId: cfg.pingRoleId || null,
+  defaultRegion: cfg.defaultRegion || null,
+  refreshChannelId: cfg.refreshChannelId || null
+};
+
     }
 
     const dir = path.dirname(CONFIG_PATH);
@@ -268,7 +326,10 @@ function getGuildConfig(guildId) {
       watches: new Map(),
       nextWatchId: 1,
       pingRoleId: null,
-      defaultRegion: null
+      defaultRegion: null,
+      refreshChannelId: null,
+lastRefreshMessageId: null,
+
     };
     guildConfigs.set(guildId, cfg);
   }
@@ -297,6 +358,8 @@ client.once('ready', () => {
 
   // Start lobby polling for alerts/watches
   setInterval(pollLobbiesAndProcessAlerts, 5000);
+  setInterval(runRegionRefreshLoop, 60 * 1000); // every minute
+
 });
 
 client.on('messageCreate', async (message) => {
@@ -381,12 +444,14 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
     .setTitle(`${lobbyDef.label} Lobby Leaderboard`)
     .setColor(ORANGE);
 
-  const headerLines = [
-    `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
-    `Players in lobby: ${players.length}`,
-    solPriceStatusLine(),
-    `Page ${currentPage + 1}/${totalPages}`
-  ];
+ const headerLines = [
+  `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
+  `Players in lobby: ${players.length}`, // already filtered by size > 3
+  solPriceStatusLine(),
+  `Last updated: ${formatEtTime(snapshot.lastFetched || Date.now())}`,
+  `Page ${currentPage + 1}/${totalPages}`
+];
+
 
   if (pagePlayers.length === 0) {
     embed.setDescription(headerLines.join('\n') + '\n\nNo active players with size > 3.');
@@ -517,6 +582,57 @@ async function handleLbCommand(message, args) {
   const { embed, components } = buildLbEmbed(lobbyDef, snapshot, players, 0);
   await message.reply({ embeds: [embed], components });
 }
+async function buildRegionSummaryEmbeds(region) {
+  const lobbyNumbers = region === 'us' ? [1, 5, 20] : [1, 20]; // EU 5 has no API
+  const embeds = [];
+
+  for (const lobbyNum of lobbyNumbers) {
+    const lobbyDef = findLobby(region, lobbyNum);
+    if (!lobbyDef || !lobbyDef.url) continue;
+
+    const snapshot = await getLobbySnapshot(lobbyDef);
+    if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
+
+    const activePlayers = snapshot.players
+      .filter(p => typeof p.size === 'number' && p.size > 3)
+      .sort((a, b) => {
+        const usdA = typeof a.usdFromSol === 'number' ? a.usdFromSol : 0;
+        const usdB = typeof b.usdFromSol === 'number' ? b.usdFromSol : 0;
+        return usdB - usdA;
+      });
+
+    const top5 = activePlayers.slice(0, 5);
+    const lastUpdated = formatEtTime(snapshot.lastFetched || Date.now());
+
+    const lines = top5.map((p, idx) => {
+      const rank = idx + 1;
+      const name = p.name || p.privyId || p.id || 'Unknown';
+      const usd =
+        typeof p.usdFromSol === 'number'
+          ? `$${p.usdFromSol.toFixed(2)}`
+          : '(price unavailable)';
+      return `#${rank} ${name} - ${usd}`;
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${lobbyDef.label} Lobby Leaderboard`)
+      .setColor(ORANGE)
+      .setDescription(
+        [
+          `Lobby: $${lobbyDef.lobby}   Region: ${region.toUpperCase()}`,
+          `Players in lobby: ${activePlayers.length}`,
+          `Last updated: ${lastUpdated}`,
+          '',
+          lines.length ? lines.join('\n') : 'No active players with size > 3.'
+        ].join('\n')
+      );
+
+    embeds.push(embed);
+  }
+
+  return embeds;
+}
+
 async function handleRegionSummaryCommand(message, region) {
   // which lobbies to show
   const lobbyNumbers = region === 'us' ? [1, 5, 20] : [1, 20]; // skip EU 5 (no API)
@@ -581,6 +697,7 @@ async function handleRegionSummaryCommand(message, region) {
 async function handleAlertCommand(message, args) {
   const guildId = message.guild.id;
   const cfg = getGuildConfig(guildId);
+  
 
   const sub = (args[0] || '').toLowerCase();
 
@@ -750,6 +867,7 @@ async function handleAlertCommand(message, args) {
     return;
   }
 
+
   if (sub === 'status') {
     const channelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
     const enabled = [];
@@ -791,7 +909,44 @@ async function handleWatchCommand(message, args) {
 
   const sub = (args[0] || '').toLowerCase();
 
-  if (!sub) {
+   if (!sub) {
+    const embed = new EmbedBuilder()
+      .setTitle('Lobby Watchers')
+      .setDescription(
+        [
+          'Watch set (minutes)',
+          '',
+          'Usage:',
+          '  `,watch add <lobby> <region> <threshold> <minutes>`',
+          '  `,watch list`',
+          '  `,watch remove <id>`',
+          '  `,watch clear`',
+        ].join('\n')
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
+
+
+const embed = new EmbedBuilder()
+  .setTitle('Bot Configuration')
+  .setDescription(
+    [
+      `Default region: ${defaultRegion}`,
+      `Alert channel: ${channelText}`,
+      `Refresh channel: ${refreshChannelText}`,
+      `Ping role: ${pingRoleText}`,
+      '',
+      'Commands:',
+      '  ,config default-region <us|eu>',
+      '  ,config setrole @role',
+      '  ,config refresh channel #channel',
+      '  ,alert channel #channel'
+    ].join('\n')
+  )
+  .setColor(ORANGE);
+
     const embed = new EmbedBuilder()
       .setTitle('Lobby Watchers')
       .setDescription(
@@ -998,10 +1153,11 @@ async function handleConfigCommand(message, args) {
 
   const sub = (args[0] || '').toLowerCase();
 
-  if (!sub) {
+   if (!sub) {
     const channelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
     const defaultRegion = cfg.defaultRegion || 'not set';
     const pingRoleText = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+    const refreshChannelText = cfg.refreshChannelId ? `<#${cfg.refreshChannelId}>` : 'not set';
 
     const embed = new EmbedBuilder()
       .setTitle('Bot Configuration')
@@ -1009,11 +1165,13 @@ async function handleConfigCommand(message, args) {
         [
           `Default region: ${defaultRegion}`,
           `Alert channel: ${channelText}`,
+          `Refresh channel: ${refreshChannelText}`,
           `Ping role: ${pingRoleText}`,
           '',
           'Commands:',
           '  ,config default-region <us|eu>',
           '  ,config setrole @role',
+          '  ,config refresh channel #channel',
           '  ,alert channel #channel'
         ].join('\n')
       )
@@ -1021,6 +1179,7 @@ async function handleConfigCommand(message, args) {
     await message.reply({ embeds: [embed] });
     return;
   }
+
 
   if (sub === 'default-region') {
     const region = (args[1] || '').toLowerCase();
@@ -1061,6 +1220,30 @@ async function handleConfigCommand(message, args) {
     const embed = new EmbedBuilder()
       .setTitle('Ping role set')
       .setDescription(`Ping role set to ${role}.`)
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
+  if (sub === 'refresh' && (args[1] || '').toLowerCase() === 'channel') {
+    const channel = message.mentions.channels.first();
+    if (!channel || !channel.isTextBased()) {
+      cfg.refreshChannelId = null;
+      saveGuildConfigsToDisk();
+      const embed = new EmbedBuilder()
+        .setTitle('Refresh channel cleared')
+        .setDescription('Auto refresh disabled. No refresh channel set.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    cfg.refreshChannelId = channel.id;
+    saveGuildConfigsToDisk();
+    const embed = new EmbedBuilder()
+      .setTitle('Refresh channel set')
+      .setDescription(
+        `Auto lobby summary will refresh every minute in ${channel} using the default region.`
+      )
       .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
