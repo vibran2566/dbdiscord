@@ -302,16 +302,18 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
     pagePlayers.forEach((p, index) => {
       const rank = start + index + 1;
       const name = p.name || p.privyId || p.id || 'Unknown';
-      const usdDisplay =
-        typeof p.usdFromSol === 'number'
-          ? `$${p.usdFromSol.toFixed(4)}`
-          : '(price unavailable)';
-      embed.addFields({
-        name: `#${rank} ${name}`,
-        value: `Size: ${p.size.toFixed(2)}\nUSD: ${usdDisplay}`,
-        inline: false
-      });
-    });
+      const roundedSize = Math.round(p.size); // size to ones place
+const usdDisplay =
+  typeof p.usdFromSol === 'number'
+    ? `$${p.usdFromSol.toFixed(2)}` // USD to hundredths
+    : '(price unavailable)';
+
+embed.addFields({
+  name: `#${rank} ${name}`,
+  value: `Size: ${roundedSize}\nUSD: ${usdDisplay}`,
+  inline: false
+});
+
     embed.setFooter({ text: 'Players with size = 0 or <= 3 are hidden' });
   }
 
@@ -984,11 +986,22 @@ async function processJoinAlerts() {
       if (!cfg.alertEnabled[key]) continue;
 
       const snapshot = lobbyCache.get(key);
-      if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
+if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
 
-      const currentIds = new Set(
-        snapshot.players.map(p => p.privyId || p.id).filter(Boolean)
-      );
+// Only consider players with size > 3
+const activePlayers = snapshot.players.filter(
+  p => typeof p.size === 'number' && p.size > 3
+);
+if (activePlayers.length === 0) {
+  // no active players, reset last seen and skip
+  cfg.lastSeenPlayers[key] = new Set();
+  continue;
+}
+
+const currentIds = new Set(
+  activePlayers.map(p => p.privyId || p.id).filter(Boolean)
+);
+
 
       if (!cfg.lastSeenPlayers[key]) {
         cfg.lastSeenPlayers[key] = new Set();
@@ -998,9 +1011,10 @@ async function processJoinAlerts() {
       const newJoins = [];
       for (const id of currentIds) {
         if (!lastSet.has(id)) {
-          const player = snapshot.players.find(
-            p => (p.privyId || p.id) === id
-          );
+          const player = activePlayers.find(
+  p => (p.privyId || p.id) === id
+);
+
           if (player) newJoins.push(player);
         }
       }
@@ -1015,7 +1029,7 @@ async function processJoinAlerts() {
         const embed = new EmbedBuilder()
           .setTitle('Lobby Join')
           .setDescription(
-            `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby.\nLobby players: ${snapshot.playerCount}.`
+            `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby.\nLobby players: ${activeCount}.`
           )
           .setColor(ORANGE);
         await channel.send({ content: pingContent, embeds: [embed] });
@@ -1059,10 +1073,15 @@ async function processWatches() {
       if (!lobbyDef) continue;
 
       const snapshot = lobbyCache.get(watch.lobbyKey);
-      if (!snapshot || snapshot.noApi) continue;
+if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
 
-      const playerCount = snapshot.playerCount || 0;
-      if (playerCount < watch.threshold) continue;
+// Only count players with size > 3
+const activeCount = snapshot.players.filter(
+  p => typeof p.size === 'number' && p.size > 3
+).length;
+
+if (activeCount < watch.threshold) continue;
+
 
       const intervalMs = watch.intervalMinutes * 60 * 1000;
       const lastMs = watch.lastAlertAt ? watch.lastAlertAt.getTime() : 0;
@@ -1072,8 +1091,9 @@ async function processWatches() {
           .setTitle('Lobby Watch Alert')
           .setDescription(
             [
-              `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${playerCount} players.`,
-              `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
+              `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${activeCount} players.`,
+`Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
+
             ].join('\n')
           )
           .setColor(ORANGE);
