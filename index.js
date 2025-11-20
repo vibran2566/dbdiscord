@@ -459,7 +459,7 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
 
 
   if (pagePlayers.length === 0) {
-    embed.setDescription(headerLines.join('\n') + '\n\nNo active players with size > 3.');
+    embed.setDescription(headerLines.join('\n') + '\n\nNo active players');
   } else {
     embed.setDescription(headerLines.join('\n'));
 
@@ -628,7 +628,7 @@ async function buildRegionSummaryEmbeds(region) {
           `Players in lobby: ${activePlayers.length}`,
           `Last updated: ${lastUpdated}`,
           '',
-          lines.length ? lines.join('\n') : 'No active players with size > 3.'
+          lines.length ? lines.join('\n') : 'No active players'
         ].join('\n')
       );
 
@@ -679,7 +679,7 @@ async function handleRegionSummaryCommand(message, region) {
           `Lobby: $${lobbyDef.lobby}   Region: ${region.toUpperCase()}`,
           `Players in lobby: ${activePlayers.length}`, // size > 3 only
           '',
-          lines.length ? lines.join('\n') : 'No active players with size > 3.'
+          lines.length ? lines.join('\n') : 'No active players'
         ].join('\n')
       );
 
@@ -865,7 +865,7 @@ async function handleAlertCommand(message, args) {
         { name: 'EU lobbies', value: euLines.join('\n') || 'None', inline: true }
       )
       .setFooter({
-        text: 'Use ,alert on <lobby> <region> or ,alert off <lobby> <region> to change'
+        text: 'Use ,alert on/off <lobby> <region> to change'
       })
       .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
@@ -1050,12 +1050,13 @@ const embed = new EmbedBuilder()
     for (const [id, watch] of cfg.watches.entries()) {
       const lobbyDef = LOBBIES.find(l => l.key === watch.lobbyKey);
       const lobbyLabel = lobbyDef ? lobbyDef.label : watch.lobbyKey;
-      const last = watch.lastAlertAt ? watch.lastAlertAt.toISOString() : 'never';
-      embed.addFields({
-        name: `${lobbyLabel} (ID ${id})`,
-        value: `Threshold: ${watch.threshold} players\nInterval: ${watch.intervalMinutes} minute(s)\nLast alert: ${last}`,
-        inline: false
-      });
+      const last = watch.lastAlertAt ? formatEtTime(watch.lastAlertAt) : 'never';
+
+embed.addFields({
+  name: `${lobbyLabel} (ID ${id})`,
+  value: `Threshold: ${watch.threshold} players\nInterval: ${watch.intervalMinutes} minute(s)\nLast alert: ${last}`,
+  inline: false
+});
     }
 
     await message.reply({ embeds: [embed] });
