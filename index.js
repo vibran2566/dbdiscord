@@ -247,18 +247,21 @@ function loadGuildConfigsFromDisk() {
     guildConfigs.clear();
 
     for (const [guildId, stored] of Object.entries(parsed)) {
-     const cfg = {
+    const cfg = {
   alertChannelId: stored.alertChannelId || null,
   alertEnabled: stored.alertEnabled || {},
   lastSeenPlayers: {},          // rebuilt at runtime
   watches: new Map(),
   nextWatchId: stored.nextWatchId || 1,
-  pingRoleId: stored.pingRoleId || null,
+  // NEW: split ping roles (use old pingRoleId as lobby fallback)
+  lobbyPingRoleId: stored.lobbyPingRoleId || stored.pingRoleId || null,
+  watchPingRoleId: stored.watchPingRoleId || null,
   defaultRegion: stored.defaultRegion || null,
   refreshChannelId: stored.refreshChannelId || null,
   lastRefreshMessageId: null,
   watchChannelId: stored.watchChannelId || null
 };
+
 
 
 
@@ -300,11 +303,14 @@ function saveGuildConfigsToDisk() {
     lastAlertAt: w.lastAlertAt ? w.lastAlertAt.toISOString() : null
   })),
   nextWatchId: cfg.nextWatchId || 1,
-  pingRoleId: cfg.pingRoleId || null,
+  // NEW: split ping roles
+  lobbyPingRoleId: cfg.lobbyPingRoleId || null,
+  watchPingRoleId: cfg.watchPingRoleId || null,
   defaultRegion: cfg.defaultRegion || null,
   refreshChannelId: cfg.refreshChannelId || null,
   watchChannelId: cfg.watchChannelId || null
 };
+
 
 
     }
@@ -323,21 +329,23 @@ function saveGuildConfigsToDisk() {
 function getGuildConfig(guildId) {
   let cfg = guildConfigs.get(guildId);
   if (!cfg) {
-    cfg = {
-  alertChannelId: null,
-  alertEnabled: {},
-  lastSeenPlayers: {},
-  watches: new Map(),
-  nextWatchId: 1,
-  pingRoleId: null,
-  defaultRegion: null,
-  refreshChannelId: null,
-  lastRefreshMessageId: null,
-  watchChannelId: null
-};
+  cfg = {
+    alertChannelId: null,
+    alertEnabled: {},
+    lastSeenPlayers: {},
+    watches: new Map(),
+    nextWatchId: 1,
+    // NEW:
+    lobbyPingRoleId: null,
+    watchPingRoleId: null,
+    defaultRegion: null,
+    refreshChannelId: null,
+    lastRefreshMessageId: null,
+    watchChannelId: null
+  };
+  guildConfigs.set(guildId, cfg);
+}
 
-    guildConfigs.set(guildId, cfg);
-  }
   return cfg;
 }
 
@@ -1133,36 +1141,40 @@ async function handleConfigCommand(message, args) {
   const sub = (args[0] || '').toLowerCase();
 
    if (!sub) {
-    const channelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
-const defaultRegion = cfg.defaultRegion || 'not set';
-const pingRoleText = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
-const refreshChannelText = cfg.refreshChannelId ? `<#${cfg.refreshChannelId}>` : 'not set';
-const watchChannelText = cfg.watchChannelId ? `<#${cfg.watchChannelId}>` : 'not set';
+    
+  if (!sub) {
+  const alertChannelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
+  const watchChannelText = cfg.watchChannelId ? `<#${cfg.watchChannelId}>` : 'not set';
+  const refreshChannelText = cfg.refreshChannelId ? `<#${cfg.refreshChannelId}>` : 'not set';
+  const defaultRegion = cfg.defaultRegion || 'not set';
+  const lobbyPingText = cfg.lobbyPingRoleId ? `<@&${cfg.lobbyPingRoleId}>` : 'none';
+  const watchPingText = cfg.watchPingRoleId ? `<@&${cfg.watchPingRoleId}>` : 'none';
 
+  const embed = new EmbedBuilder()
+    .setTitle('Bot Configuration')
+    .setDescription(
+      [
+        `Default region: ${defaultRegion}`,
+        `Alert channel (join alerts): ${alertChannelText}`,
+        `Watch channel (watch alerts): ${watchChannelText}`,
+        `Refresh channel (summary): ${refreshChannelText}`,
+        `Lobby ping role (join alerts): ${lobbyPingText}`,
+        `Watch ping role (watch alerts): ${watchPingText}`,
+        '',
+        'Commands:',
+        '  ,config default-region <us|eu>',
+        '  ,config lobby setrole @role',
+        '  ,config watch setrole @role',
+        '  ,config watch channel #channel',
+        '  ,config refresh channel #channel',
+        '  ,alert channel #channel'
+      ].join('\n')
+    )
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
+  return;
+}
 
-    const embed = new EmbedBuilder()
-      .setTitle('Bot Configuration')
-      .setDescription(
-  [
-    `Default region: ${defaultRegion}`,
-    `Alert channel: ${channelText}`,
-    `Watch channel: ${watchChannelText}`,
-    `Refresh channel: ${refreshChannelText}`,
-    `Ping role: ${pingRoleText}`,
-    '',
-    'Commands:',
-    '  ,config default-region <us|eu>',
-    '  ,config setrole @role',
-    '  ,config watch channel #channel',
-    '  ,config refresh channel #channel',
-    '  ,alert channel #channel'
-  ].join('\n')
-)
-
-      .setColor(ORANGE);
-    await message.reply({ embeds: [embed] });
-    return;
-  }
 
 
   if (sub === 'default-region') {
@@ -1186,30 +1198,53 @@ const watchChannelText = cfg.watchChannelId ? `<#${cfg.watchChannelId}>` : 'not 
     await message.reply({ embeds: [embed] });
     return;
   }
-
-  if (sub === 'setrole') {
-    const role = message.mentions.roles.first();
-    if (!role) {
-      cfg.pingRoleId = null;
-      saveGuildConfigsToDisk();
-      const embed = new EmbedBuilder()
-        .setTitle('Ping role cleared')
-        .setDescription('Ping role cleared. No ping role given.')
-        .setColor(ORANGE);
-      await message.reply({ embeds: [embed] });
-      return;
-    }
-    cfg.pingRoleId = role.id;
+if (sub === 'lobby' && (args[1] || '').toLowerCase() === 'setrole') {
+  const role = message.mentions.roles.first();
+  if (!role) {
+    cfg.lobbyPingRoleId = null;
     saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
-      .setTitle('Ping role set')
-      .setDescription(`Ping role set to ${role}.`)
+      .setTitle('Lobby ping role cleared')
+      .setDescription('Lobby (join) alerts will no longer ping a role.')
       .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
+
+  cfg.lobbyPingRoleId = role.id;
+  saveGuildConfigsToDisk();
+  const embed = new EmbedBuilder()
+    .setTitle('Lobby ping role set')
+    .setDescription(`Lobby (join) alerts will ping ${role}.`)
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
+  return;
+}
+if (sub === 'watch' && (args[1] || '').toLowerCase() === 'setrole') {
+  const role = message.mentions.roles.first();
+  if (!role) {
+    cfg.watchPingRoleId = null;
+    saveGuildConfigsToDisk();
+    const embed = new EmbedBuilder()
+      .setTitle('Watch ping role cleared')
+      .setDescription('Watch alerts will no longer ping a role.')
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
+
+  cfg.watchPingRoleId = role.id;
+  saveGuildConfigsToDisk();
+  const embed = new EmbedBuilder()
+    .setTitle('Watch ping role set')
+    .setDescription(`Watch alerts will ping ${role}.`)
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
+  return;
+}
+
   if (sub === 'refresh' && (args[1] || '').toLowerCase() === 'channel') {
-    const channel = message.mentions.channels.first();
+    const channel = message.mentions.channeldefault-regions.first();
     if (!channel || !channel.isTextBased()) {
       cfg.refreshChannelId = null;
       saveGuildConfigsToDisk();
@@ -1258,12 +1293,20 @@ const watchChannelText = cfg.watchChannelId ? `<#${cfg.watchChannelId}>` : 'not 
   }
 
   const embed = new EmbedBuilder()
-    .setTitle('Unknown subcommand')
-    .setDescription(
-      'Usage: `,config default-region <us|eu>`, `,config setrole @role`'
-    )
-    .setColor(ORANGE);
-  await message.reply({ embeds: [embed] });
+  .setTitle('Unknown subcommand')
+  .setDescription(
+    [
+      'Usage:',
+      '  ,config default-region <us|eu>',
+      '  ,config lobby setrole @role',
+      '  ,config watch setrole @role',
+      '  ,config watch channel #channel',
+      '  ,config refresh channel #channel'
+    ].join('\n')
+  )
+  .setColor(ORANGE);
+await message.reply({ embeds: [embed] });
+
 }
 
 // ----- Polling loop for join alerts and watches -----
@@ -1294,7 +1337,10 @@ async function processJoinAlerts() {
     const channel = guild.channels.cache.get(cfg.alertChannelId);
     if (!channel || !channel.isTextBased()) continue;
 
-    const pingContent = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+    const pingContent = cfg.lobbyPingRoleId
+  ? `<@&${cfg.lobbyPingRoleId}>`
+  : 'No ping role given';
+
 
     for (const lobby of LOBBIES) {
       const key = lobby.key;
@@ -1390,7 +1436,10 @@ async function processWatches() {
     const channel = guild.channels.cache.get(targetChannelId);
     if (!channel || !channel.isTextBased()) continue;
 
-    const pingContent = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+    const pingContent = cfg.watchPingRoleId
+  ? `<@&${cfg.watchPingRoleId}>`
+  : 'No ping role given';
+
 
     for (const [id, watch] of cfg.watches.entries()) {
       const lobbyDef = LOBBIES.find(l => l.key === watch.lobbyKey);
