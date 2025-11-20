@@ -11,11 +11,21 @@ const {
   ButtonStyle
 } = require('discord.js');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
 
 const PREFIX = ',';
 const ORANGE = 0xffa500;
 const LB_PAGE_SIZE = 5;
+// Where to store per-guild config
+// On Render: /data is a persistent disk (once you attach it)
+// Locally: falls back to a JSON file in this folder.
+const CONFIG_PATH =
+  process.env.GUILD_CONFIG_PATH ||
+  (process.env.RENDER
+    ? '/data/discord-guild-config.json'
+    : path.join(__dirname, 'discord-guild-config.json'));
 
 // ----- Lobbies definition -----
 const LOBBIES = [
@@ -174,6 +184,80 @@ async function getLobbySnapshot(lobbyDef) {
 // }
 const guildConfigs = new Map();
 
+function loadGuildConfigsFromDisk() {
+  try {
+    if (!fs.existsSync(CONFIG_PATH)) return;
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
+    if (!raw) return;
+
+    const parsed = JSON.parse(raw);
+    guildConfigs.clear();
+
+    for (const [guildId, stored] of Object.entries(parsed)) {
+      const cfg = {
+        alertChannelId: stored.alertChannelId || null,
+        alertEnabled: stored.alertEnabled || {},
+        lastSeenPlayers: {},          // rebuilt at runtime
+        watches: new Map(),
+        nextWatchId: stored.nextWatchId || 1,
+        pingRoleId: stored.pingRoleId || null,
+        defaultRegion: stored.defaultRegion || null
+      };
+
+      if (Array.isArray(stored.watches)) {
+        for (const w of stored.watches) {
+          cfg.watches.set(w.id, {
+            id: w.id,
+            lobbyKey: w.lobbyKey,
+            threshold: w.threshold,
+            intervalMinutes: w.intervalMinutes,
+            lastAlertAt: w.lastAlertAt ? new Date(w.lastAlertAt) : null
+          });
+        }
+      }
+
+      guildConfigs.set(guildId, cfg);
+    }
+
+    console.log(
+      `Loaded guild config for ${guildConfigs.size} guild(s) from ${CONFIG_PATH}`
+    );
+  } catch (err) {
+    console.error('Failed to load guild config file:', err);
+  }
+}
+
+function saveGuildConfigsToDisk() {
+  try {
+    const obj = {};
+    for (const [guildId, cfg] of guildConfigs.entries()) {
+      obj[guildId] = {
+        alertChannelId: cfg.alertChannelId || null,
+        alertEnabled: cfg.alertEnabled || {},
+        watches: Array.from(cfg.watches.values()).map(w => ({
+          id: w.id,
+          lobbyKey: w.lobbyKey,
+          threshold: w.threshold,
+          intervalMinutes: w.intervalMinutes,
+          lastAlertAt: w.lastAlertAt ? w.lastAlertAt.toISOString() : null
+        })),
+        nextWatchId: cfg.nextWatchId || 1,
+        pingRoleId: cfg.pingRoleId || null,
+        defaultRegion: cfg.defaultRegion || null
+      };
+    }
+
+    const dir = path.dirname(CONFIG_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(obj, null, 2), 'utf8');
+  } catch (err) {
+    console.error('Failed to save guild config file:', err);
+  }
+}
+
 function getGuildConfig(guildId) {
   let cfg = guildConfigs.get(guildId);
   if (!cfg) {
@@ -183,12 +267,17 @@ function getGuildConfig(guildId) {
       lastSeenPlayers: {},
       watches: new Map(),
       nextWatchId: 1,
-      pingRoleId: null
+      pingRoleId: null,
+      defaultRegion: null
     };
     guildConfigs.set(guildId, cfg);
   }
   return cfg;
 }
+
+// Load saved config once on startup
+loadGuildConfigsFromDisk();
+
 
 // ----- Discord client -----
 const client = new Client({
@@ -527,6 +616,7 @@ async function handleAlertCommand(message, args) {
       return;
     }
     cfg.alertChannelId = channel.id;
+    saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
       .setTitle('Alert channel set')
       .setDescription(
@@ -595,6 +685,7 @@ async function handleAlertCommand(message, args) {
       if (!cfg.lastSeenPlayers[key]) {
         cfg.lastSeenPlayers[key] = new Set();
       }
+      saveGuildConfigsToDisk();
       const embed = new EmbedBuilder()
         .setTitle('Join alerts enabled')
         .setDescription(
@@ -616,6 +707,7 @@ async function handleAlertCommand(message, args) {
       }
       cfg.alertEnabled[key] = false;
       cfg.lastSeenPlayers[key] = new Set();
+      saveGuildConfigsToDisk();
       const embed = new EmbedBuilder()
         .setTitle('Join alerts disabled')
         .setDescription(
@@ -792,6 +884,7 @@ async function handleWatchCommand(message, args) {
       intervalMinutes: minutes,
       lastAlertAt: null
     });
+    saveGuildConfigsToDisk();
 
     const embed = new EmbedBuilder()
       .setTitle('Watch created')
@@ -861,6 +954,7 @@ async function handleWatchCommand(message, args) {
       return;
     }
     cfg.watches.delete(id);
+    saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
       .setTitle('Watch removed')
       .setDescription(`Watch ${id} removed.`)
@@ -879,6 +973,7 @@ async function handleWatchCommand(message, args) {
       return;
     }
     cfg.watches.clear();
+    saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
       .setTitle('Watches cleared')
       .setDescription('All watches have been cleared for this server.')
@@ -940,6 +1035,7 @@ async function handleConfigCommand(message, args) {
       return;
     }
     cfg.defaultRegion = region;
+    saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
       .setTitle('Default region set')
       .setDescription(`Default region set to ${region.toUpperCase()}.`)
@@ -952,6 +1048,7 @@ async function handleConfigCommand(message, args) {
     const role = message.mentions.roles.first();
     if (!role) {
       cfg.pingRoleId = null;
+      saveGuildConfigsToDisk();
       const embed = new EmbedBuilder()
         .setTitle('Ping role cleared')
         .setDescription('Ping role cleared. No ping role given.')
@@ -960,6 +1057,7 @@ async function handleConfigCommand(message, args) {
       return;
     }
     cfg.pingRoleId = role.id;
+    saveGuildConfigsToDisk();
     const embed = new EmbedBuilder()
       .setTitle('Ping role set')
       .setDescription(`Ping role set to ${role}.`)
