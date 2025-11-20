@@ -42,7 +42,8 @@ const LOBBIES = [
     region: 'eu',
     lobby: 5,
     label: 'EU $5',
-    url: 'https://damnbruh-game-server-instance-5-eu.onrender.com/players'
+    url: null, // no API for this server
+    noApi: true
   },
   {
     key: 'eu-20',
@@ -80,19 +81,6 @@ async function refreshSolPrice() {
   }
 }
 
-function formatUsdFromSol(solAmount, usdFromCache) {
-  const priceToUse = typeof usdFromCache === 'number' ? null : null;
-  // We will prefer the precomputed USD value from the lobby fetch if present.
-  if (typeof usdFromCache === 'number') {
-    return `$${usdFromCache.toFixed(4)}`;
-  }
-  if (!solPriceUsd || solPriceUsd <= 0) {
-    return '(price unavailable)';
-  }
-  const usd = solAmount * solPriceUsd;
-  return `$${usd.toFixed(4)}`;
-}
-
 function solPriceStatusLine() {
   if (!solPriceUsd || !solPriceUpdatedAt) {
     return 'SOL price: unavailable (will retry every 60s)';
@@ -104,6 +92,20 @@ function solPriceStatusLine() {
 const lobbyCache = new Map(); // key -> { data, lastFetched: Date }
 
 async function fetchLobbyPlayers(lobbyDef) {
+  // Special case: no API for this lobby (EU $5)
+  if (!lobbyDef.url) {
+    const cached = {
+      serverId: lobbyDef.key,
+      playerCount: 0,
+      players: [],
+      timestamp: Date.now(),
+      lastFetched: new Date(),
+      noApi: true
+    };
+    lobbyCache.set(lobbyDef.key, cached);
+    return cached;
+  }
+
   try {
     const res = await axios.get(lobbyDef.url, { timeout: 5000 });
     if (!res.data || !res.data.success) {
@@ -130,7 +132,8 @@ async function fetchLobbyPlayers(lobbyDef) {
       playerCount: typeof data.playerCount === 'number' ? data.playerCount : players.length,
       players: playersWithUsd,
       timestamp: data.timestamp || Date.now(),
-      lastFetched: new Date()
+      lastFetched: new Date(),
+      noApi: false
     };
 
     lobbyCache.set(lobbyDef.key, cached);
@@ -275,11 +278,22 @@ async function handleLbCommand(message, args) {
     return;
   }
 
+  // EU $5 has no API
+  if (!lobbyDef.url) {
+    await message.reply('No API for this server.');
+    return;
+  }
+
   const snapshot = await getLobbySnapshot(lobbyDef);
   if (!snapshot) {
     await message.reply(
       'Could not load lobby data right now. The game server might be offline or unreachable. Please try again in a moment.'
     );
+    return;
+  }
+
+  if (snapshot.noApi) {
+    await message.reply('No API for this server.');
     return;
   }
 
@@ -395,6 +409,17 @@ async function handleAlertCommand(message, args) {
       return;
     }
 
+    const lobbyDef = findLobby(region, lobbyNum);
+    if (!lobbyDef) {
+      await message.reply('Could not find that lobby definition.');
+      return;
+    }
+
+    if (!lobbyDef.url) {
+      await message.reply('No API for this server.');
+      return;
+    }
+
     if (sub === 'on') {
       if (!cfg.alertChannelId) {
         await message.reply('Alert channel is not set. Use `,alert channel #channel` first.');
@@ -430,7 +455,12 @@ async function handleAlertCommand(message, args) {
     const usLines = [];
     const euLines = [];
     for (const lobby of LOBBIES) {
-      const state = cfg.alertEnabled[lobby.key] ? 'ON' : 'OFF';
+      let state;
+      if (!lobby.url) {
+        state = 'NO API';
+      } else {
+        state = cfg.alertEnabled[lobby.key] ? 'ON' : 'OFF';
+      }
       const line = `$${lobby.lobby}  - ${state}`;
       if (lobby.region === 'us') usLines.push(line);
       else euLines.push(line);
@@ -455,6 +485,7 @@ async function handleAlertCommand(message, args) {
     const channelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
     const enabled = [];
     for (const lobby of LOBBIES) {
+      if (!lobby.url) continue; // skip no-API lobbies
       if (cfg.alertEnabled[lobby.key]) {
         enabled.push(`$${lobby.lobby} ${lobby.region.toUpperCase()}`);
       }
@@ -558,6 +589,11 @@ async function handleWatchCommand(message, args) {
     const lobbyDef = findLobby(region, lobbyNum);
     if (!lobbyDef) {
       await message.reply('Could not find that lobby definition.');
+      return;
+    }
+
+    if (!lobbyDef.url) {
+      await message.reply('No API for this server.');
       return;
     }
 
@@ -723,7 +759,7 @@ async function processJoinAlerts() {
       if (!cfg.alertEnabled[key]) continue;
 
       const snapshot = lobbyCache.get(key);
-      if (!snapshot || !Array.isArray(snapshot.players)) continue;
+      if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
 
       const currentIds = new Set(
         snapshot.players.map(p => p.privyId || p.id).filter(Boolean)
@@ -788,7 +824,7 @@ async function processWatches() {
       if (!lobbyDef) continue;
 
       const snapshot = lobbyCache.get(watch.lobbyKey);
-      if (!snapshot) continue;
+      if (!snapshot || snapshot.noApi) continue;
 
       const playerCount = snapshot.playerCount || 0;
       if (playerCount < watch.threshold) continue;
