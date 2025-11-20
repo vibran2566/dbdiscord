@@ -1374,15 +1374,21 @@ async function processWatches() {
   const now = Date.now();
 
   for (const [guildId, cfg] of guildConfigs.entries()) {
-    if (!cfg.alertChannelId) continue;
+    // prefer dedicated watch channel; fall back to alert channel
+    const targetChannelId = cfg.watchChannelId || cfg.alertChannelId;
+    if (!targetChannelId) continue;
 
     const guild = client.guilds.cache.get(guildId);
     if (!guild) continue;
 
-    const channel = guild.channels.cache.get(cfg.alertChannelId);
+    const channel = guild.channels.cache.get(targetChannelId);
     if (!channel || !channel.isTextBased()) continue;
 
     const pingContent = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+
+    // keep the rest of your loop exactly as it is:
+    // for (const [id, watch] of cfg.watches.entries()) { ... }
+
 
     for (const [id, watch] of cfg.watches.entries()) {
       const lobbyDef = LOBBIES.find(l => l.key === watch.lobbyKey);
