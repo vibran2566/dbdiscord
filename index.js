@@ -1,11 +1,21 @@
 
 'use strict';
 
-const { Client, GatewayIntentBits, Partials, EmbedBuilder } = require('discord.js');
+const {
+  Client,
+  GatewayIntentBits,
+  Partials,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle
+} = require('discord.js');
 const axios = require('axios');
 require('dotenv').config();
 
 const PREFIX = ',';
+const ORANGE = 0xffa500;
+const LB_PAGE_SIZE = 5;
 
 // ----- Lobbies definition -----
 const LOBBIES = [
@@ -158,7 +168,9 @@ async function getLobbySnapshot(lobbyDef) {
 //   alertEnabled: { [lobbyKey]: boolean },
 //   lastSeenPlayers: { [lobbyKey]: Set<string> },
 //   watches: Map<number, { id, lobbyKey, threshold, intervalMinutes, lastAlertAt: Date|null }>,
-//   nextWatchId: number
+//   nextWatchId: number,
+//   pingRoleId: string|null,
+//   defaultRegion?: string
 // }
 const guildConfigs = new Map();
 
@@ -170,7 +182,8 @@ function getGuildConfig(guildId) {
       alertEnabled: {},
       lastSeenPlayers: {},
       watches: new Map(),
-      nextWatchId: 1
+      nextWatchId: 1,
+      pingRoleId: null
     };
     guildConfigs.set(guildId, cfg);
   }
@@ -221,6 +234,114 @@ client.on('messageCreate', async (message) => {
   }
 });
 
+// Handle button interactions (leaderboard pagination)
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+
+  const id = interaction.customId;
+  if (!id.startsWith('lb_prev|') && !id.startsWith('lb_next|')) return;
+
+  const parts = id.split('|');
+  const action = parts[0]; // lb_prev or lb_next
+  const region = parts[1];
+  const lobbyNum = parseInt(parts[2], 10);
+  const page = parseInt(parts[3], 10);
+
+  const lobbyDef = findLobby(region, lobbyNum);
+  if (!lobbyDef || !lobbyDef.url) {
+    await interaction.reply({ content: 'No API for this server.', ephemeral: true });
+    return;
+  }
+
+  const snapshot = await getLobbySnapshot(lobbyDef);
+  if (!snapshot || snapshot.noApi) {
+    await interaction.reply({
+      content: 'Could not load lobby data right now. Please try again in a moment.',
+      ephemeral: true
+    });
+    return;
+  }
+
+  const players = snapshot.players
+    .filter(p => typeof p.size === 'number' && p.size > 3)
+    .sort((a, b) => (b.size || 0) - (a.size || 0));
+
+  const direction = action === 'lb_prev' ? -1 : 1;
+  const newPage = page + direction;
+
+  const { embed, components } = buildLbEmbed(lobbyDef, snapshot, players, newPage);
+  await interaction.update({ embeds: [embed], components });
+});
+
+// ----- Leaderboard helpers -----
+function buildLbEmbed(lobbyDef, snapshot, players, page) {
+  const totalPages = Math.max(1, Math.ceil(players.length / LB_PAGE_SIZE));
+  let currentPage = page;
+  if (currentPage < 0) currentPage = 0;
+  if (currentPage > totalPages - 1) currentPage = totalPages - 1;
+
+  const start = currentPage * LB_PAGE_SIZE;
+  const pagePlayers = players.slice(start, start + LB_PAGE_SIZE);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`${lobbyDef.label} Lobby Leaderboard`)
+    .setColor(ORANGE);
+
+  const headerLines = [
+    `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
+    `Players in lobby: ${snapshot.playerCount}`,
+    solPriceStatusLine(),
+    `Data pulled: ${new Date(snapshot.lastFetched || Date.now()).toISOString()}`,
+    `Page ${currentPage + 1}/${totalPages}`
+  ];
+
+  if (pagePlayers.length === 0) {
+    embed.setDescription(headerLines.join('\n') + '\n\nNo active players with size > 3.');
+  } else {
+    embed.setDescription(headerLines.join('\n'));
+    pagePlayers.forEach((p, index) => {
+      const rank = start + index + 1;
+      const name = p.name || p.privyId || p.id || 'Unknown';
+      const usdDisplay =
+        typeof p.usdFromSol === 'number'
+          ? `$${p.usdFromSol.toFixed(4)}`
+          : '(price unavailable)';
+      embed.addFields({
+        name: `#${rank} ${name}`,
+        value: `Size: ${p.size.toFixed(2)}\nUSD: ${usdDisplay}`,
+        inline: false
+      });
+    });
+    embed.setFooter({ text: 'Players with size = 0 or <= 3 are hidden' });
+  }
+
+  const components = [];
+  if (totalPages > 1) {
+    const row = new ActionRowBuilder();
+    if (currentPage > 0) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`lb_prev|${lobbyDef.region}|${lobbyDef.lobby}|${currentPage}`)
+          .setLabel('◀')
+          .setStyle(ButtonStyle.Secondary)
+      );
+    }
+    if (currentPage < totalPages - 1) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`lb_next|${lobbyDef.region}|${lobbyDef.lobby}|${currentPage}`)
+          .setLabel('▶')
+          .setStyle(ButtonStyle.Secondary)
+      );
+    }
+    if (row.components.length > 0) {
+      components.push(row);
+    }
+  }
+
+  return { embed, components };
+}
+
 // ----- ,lb command -----
 async function handleLbCommand(message, args) {
   if (args.length < 2) {
@@ -245,13 +366,13 @@ async function handleLbCommand(message, args) {
           '  ,lb 20 us',
           '',
           'Notes:',
-          '  • Players with size = 0 are ignored',
+          '  • Players with size ≤ 3 are ignored',
           '  • Shows USD value converted from SOL',
           '',
           solPriceStatusLine()
         ].join('\n')
       )
-      .setColor(0x00AEFF);
+      .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
@@ -260,79 +381,64 @@ async function handleLbCommand(message, args) {
   const region = (args[1] || '').toLowerCase();
 
   if (![1, 5, 20].includes(lobbyNum)) {
-    await message.reply(
-      'Invalid lobby. Lobby must be 1, 5, or 20.\nUsage: `,lb <lobby> <region>`\nExample: `,lb 5 us`'
-    );
+    const embed = new EmbedBuilder()
+      .setTitle('Invalid lobby')
+      .setDescription(
+        'Lobby must be 1, 5, or 20.\nUsage: `,lb <lobby> <region>`\nExample: `,lb 5 us`'
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
   if (!['us', 'eu'].includes(region)) {
-    await message.reply(
-      'Invalid region. Region must be "us" or "eu".\nUsage: `,lb <lobby> <region>`\nExample: `,lb 5 us`'
-    );
+    const embed = new EmbedBuilder()
+      .setTitle('Invalid region')
+      .setDescription(
+        'Region must be "us" or "eu".\nUsage: `,lb <lobby> <region>`\nExample: `,lb 5 us`'
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   const lobbyDef = findLobby(region, lobbyNum);
   if (!lobbyDef) {
-    await message.reply('Could not find that lobby definition.');
+    const embed = new EmbedBuilder()
+      .setTitle('Error')
+      .setDescription('Could not find that lobby definition.')
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   // EU $5 has no API
   if (!lobbyDef.url) {
-    await message.reply('No API for this server.');
+    const embed = new EmbedBuilder()
+      .setTitle(lobbyDef.label)
+      .setDescription('No API for this server.')
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   const snapshot = await getLobbySnapshot(lobbyDef);
-  if (!snapshot) {
-    await message.reply(
-      'Could not load lobby data right now. The game server might be offline or unreachable. Please try again in a moment.'
-    );
-    return;
-  }
-
-  if (snapshot.noApi) {
-    await message.reply('No API for this server.');
+  if (!snapshot || snapshot.noApi) {
+    const embed = new EmbedBuilder()
+      .setTitle('Error')
+      .setDescription(
+        'Could not load lobby data right now. The game server might be offline or unreachable. Please try again in a moment.'
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   const players = snapshot.players
-    .filter(p => typeof p.size === 'number' && p.size > 0)
+    .filter(p => typeof p.size === 'number' && p.size > 3)
     .sort((a, b) => (b.size || 0) - (a.size || 0));
 
-  const embed = new EmbedBuilder()
-    .setTitle(`${lobbyDef.label} Lobby Leaderboard`)
-    .setColor(0x00ff88);
-
-  const headerLines = [
-    `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
-    `Players in lobby: ${snapshot.playerCount}`,
-    solPriceStatusLine(),
-    `Data pulled: ${new Date(snapshot.lastFetched || Date.now()).toISOString()}`
-  ];
-
-  if (players.length === 0) {
-    embed.setDescription(headerLines.join('\n') + '\n\nNo active players with size > 0.');
-  } else {
-    embed.setDescription(headerLines.join('\n'));
-    players.slice(0, 25).forEach((p, index) => {
-      const rank = index + 1;
-      const name = p.name || p.privyId || p.id || 'Unknown';
-      const usdDisplay =
-        typeof p.usdFromSol === 'number'
-          ? `$${p.usdFromSol.toFixed(4)}`
-          : '(price unavailable)';
-      embed.addFields({
-        name: `#${rank} ${name}`,
-        value: `Size: ${p.size.toFixed(2)}\nUSD: ${usdDisplay}`,
-        inline: false
-      });
-    });
-    embed.setFooter({ text: 'Players with size = 0 are hidden' });
-  }
-
-  await message.reply({ embeds: [embed] });
+  const { embed, components } = buildLbEmbed(lobbyDef, snapshot, players, 0);
+  await message.reply({ embeds: [embed], components });
 }
 
 // ----- ,alert command -----
@@ -372,7 +478,7 @@ async function handleAlertCommand(message, args) {
         ].join('\n')
       )
       .setFooter({ text: 'Alerts ping when someone joins that lobby' })
-      .setColor(0x00AEFF);
+      .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
@@ -380,49 +486,77 @@ async function handleAlertCommand(message, args) {
   if (sub === 'channel') {
     const channel = message.mentions.channels.first();
     if (!channel || !channel.isTextBased()) {
-      await message.reply(
-        'Please mention a text channel. Example: `,alert channel #damnbruh-alerts`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid channel')
+        .setDescription(
+          'Please mention a text channel. Example: `,alert channel #damnbruh-alerts`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     cfg.alertChannelId = channel.id;
-    await message.reply(
-      `Alert channel set to ${channel}. Join and watch alerts will be sent here.`
-    );
+    const embed = new EmbedBuilder()
+      .setTitle('Alert channel set')
+      .setDescription(
+        `Alert channel set to ${channel}.\nJoin and watch alerts will be sent here.`
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   if (sub === 'on' || sub === 'off') {
     if (args.length < 3) {
-      await message.reply(
-        'Invalid arguments.\nUsage: `,alert on <lobby> <region>`\nExample: `,alert on 20 us`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid arguments')
+        .setDescription(
+          'Usage: `,alert on <lobby> <region>`\nExample: `,alert on 20 us`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     const lobbyNum = parseInt(args[1], 10);
     const region = (args[2] || '').toLowerCase();
 
     if (![1, 5, 20].includes(lobbyNum) || !['us', 'eu'].includes(region)) {
-      await message.reply(
-        'Invalid arguments.\nLobby must be 1, 5, or 20.\nRegion must be "us" or "eu".\n\nExample: `,alert on 20 us`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid arguments')
+        .setDescription(
+          'Lobby must be 1, 5, or 20.\nRegion must be "us" or "eu".\n\nExample: `,alert on 20 us`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
     const lobbyDef = findLobby(region, lobbyNum);
     if (!lobbyDef) {
-      await message.reply('Could not find that lobby definition.');
+      const embed = new EmbedBuilder()
+        .setTitle('Error')
+        .setDescription('Could not find that lobby definition.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
     if (!lobbyDef.url) {
-      await message.reply('No API for this server.');
+      const embed = new EmbedBuilder()
+        .setTitle(lobbyDef.label)
+        .setDescription('No API for this server.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
     if (sub === 'on') {
       if (!cfg.alertChannelId) {
-        await message.reply('Alert channel is not set. Use `,alert channel #channel` first.');
+        const embed = new EmbedBuilder()
+          .setTitle('Alert channel not set')
+          .setDescription('Use `,alert channel #channel` first.')
+          .setColor(ORANGE);
+        await message.reply({ embeds: [embed] });
         return;
       }
       const key = getLobbyKey(region, lobbyNum);
@@ -430,22 +564,34 @@ async function handleAlertCommand(message, args) {
       if (!cfg.lastSeenPlayers[key]) {
         cfg.lastSeenPlayers[key] = new Set();
       }
-      await message.reply(
-        `Join alerts enabled for ${region.toUpperCase()} $${lobbyNum} lobby in <#${cfg.alertChannelId}>.`
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Join alerts enabled')
+        .setDescription(
+          `Join alerts enabled for ${region.toUpperCase()} $${lobbyNum} lobby in <#${cfg.alertChannelId}>.`
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
     } else {
       const key = getLobbyKey(region, lobbyNum);
       if (!cfg.alertEnabled[key]) {
-        await message.reply(
-          `Join alerts are already disabled for ${region.toUpperCase()} $${lobbyNum} lobby.`
-        );
+        const embed = new EmbedBuilder()
+          .setTitle('Join alerts already disabled')
+          .setDescription(
+            `Join alerts are already disabled for ${region.toUpperCase()} $${lobbyNum} lobby.`
+          )
+          .setColor(ORANGE);
+        await message.reply({ embeds: [embed] });
         return;
       }
       cfg.alertEnabled[key] = false;
       cfg.lastSeenPlayers[key] = new Set();
-      await message.reply(
-        `Join alerts disabled for ${region.toUpperCase()} $${lobbyNum} lobby.`
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Join alerts disabled')
+        .setDescription(
+          `Join alerts disabled for ${region.toUpperCase()} $${lobbyNum} lobby.`
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
     }
     return;
   }
@@ -476,7 +622,7 @@ async function handleAlertCommand(message, args) {
       .setFooter({
         text: 'Use ,alert on <lobby> <region> or ,alert off <lobby> <region> to change'
       })
-      .setColor(0xCCCCCC);
+      .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
@@ -492,19 +638,27 @@ async function handleAlertCommand(message, args) {
     }
     const enabledText = enabled.length ? enabled.join(', ') : 'none';
 
-    await message.reply(
-      [
-        `Alert channel: ${channelText}`,
-        'Join alerts enabled on:',
-        `  ${enabledText}`
-      ].join('\n')
-    );
+    const embed = new EmbedBuilder()
+      .setTitle('Alert Status')
+      .setDescription(
+        [
+          `Alert channel: ${channelText}`,
+          'Join alerts enabled on:',
+          `  ${enabledText}`
+        ].join('\n')
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
-  await message.reply(
-    'Unknown subcommand.\nUsage: `,alert on|off <lobby> <region>`, `,alert channel #channel`, `,alert list`, `,alert status`'
-  );
+  const embed = new EmbedBuilder()
+    .setTitle('Unknown subcommand')
+    .setDescription(
+      'Usage: `,alert on|off <lobby> <region>`, `,alert channel #channel`, `,alert list`, `,alert status`'
+    )
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
 }
 
 // ----- ,watch command -----
@@ -527,39 +681,25 @@ async function handleWatchCommand(message, args) {
           '  `,watch remove <id>`',
           '  `,watch clear`',
           '',
-          'Lobby:',
-          '  1  - $1 lobby',
-          '  5  - $5 lobby',
-          '  20 - $20 lobby',
-          '',
-          'Region:',
-          '  us - US servers',
-          '  eu - EU servers',
-          '',
-          'Threshold:',
-          '  Minimum number of players needed to trigger the alert.',
-          '',
-          'Minutes:',
-          '  How often to send alerts while threshold is met.',
-          '  Minimum is 1 minute. There is no max.',
-          '',
           'Examples:',
           '  ,watch add 5 us 6 2',
-          '  ,watch list',
-          '  ,watch remove 1',
-          '  ,watch clear'
+          '  ,watch list'
         ].join('\n')
       )
-      .setColor(0x00AEFF);
+      .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
 
   if (sub === 'add') {
     if (args.length < 5) {
-      await message.reply(
-        'Invalid arguments.\nUsage: `,watch add <lobby> <region> <threshold> <minutes>`\nExample: `,watch add 5 us 6 2`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid arguments')
+        .setDescription(
+          'Usage: `,watch add <lobby> <region> <threshold> <minutes>`\nExample: `,watch add 5 us 6 2`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     const lobbyNum = parseInt(args[1], 10);
@@ -568,32 +708,52 @@ async function handleWatchCommand(message, args) {
     const minutes = parseInt(args[4], 10);
 
     if (![1, 5, 20].includes(lobbyNum) || !['us', 'eu'].includes(region)) {
-      await message.reply(
-        'Invalid arguments.\nLobby must be 1, 5, or 20.\nRegion must be "us" or "eu".\n\nExample: `,watch add 5 us 6 2`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid arguments')
+        .setDescription(
+          'Lobby must be 1, 5, or 20.\nRegion must be "us" or "eu".\n\nExample: `,watch add 5 us 6 2`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     if (!Number.isInteger(threshold) || threshold < 1) {
-      await message.reply(
-        'Threshold must be a whole number of players and at least 1.\nExample: `,watch add 5 us 6 2`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid threshold')
+        .setDescription(
+          'Threshold must be a whole number of players and at least 1.\nExample: `,watch add 5 us 6 2`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     if (!Number.isInteger(minutes) || minutes < 1) {
-      await message.reply(
-        'Minutes must be a whole number and at least 1.\nExample: `,watch add 5 us 6 2`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid minutes')
+        .setDescription(
+          'Minutes must be a whole number and at least 1.\nExample: `,watch add 5 us 6 2`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
     const lobbyDef = findLobby(region, lobbyNum);
     if (!lobbyDef) {
-      await message.reply('Could not find that lobby definition.');
+      const embed = new EmbedBuilder()
+        .setTitle('Error')
+        .setDescription('Could not find that lobby definition.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
     if (!lobbyDef.url) {
-      await message.reply('No API for this server.');
+      const embed = new EmbedBuilder()
+        .setTitle(lobbyDef.label)
+        .setDescription('No API for this server.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
@@ -606,24 +766,29 @@ async function handleWatchCommand(message, args) {
       lastAlertAt: null
     });
 
-    await message.reply(
-      [
-        'Watch created.',
-        '',
-        `Lobby: ${lobbyDef.label}`,
-        `Threshold: ${threshold} players`,
-        `Interval: ${minutes} minute(s)`,
-        `Watch ID: ${id}`
-      ].join('\n')
-    );
+    const embed = new EmbedBuilder()
+      .setTitle('Watch created')
+      .setDescription(
+        [
+          `Lobby: ${lobbyDef.label}`,
+          `Threshold: ${threshold} players`,
+          `Interval: ${minutes} minute(s)`
+        ].join('\n')
+      )
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   if (sub === 'list') {
     if (cfg.watches.size === 0) {
-      await message.reply(
-        'There are no active watches in this server.\nUse `,watch add <lobby> <region> <threshold> <minutes>` to create one.'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('No active watches')
+        .setDescription(
+          'There are no active watches in this server.\nUse `,watch add <lobby> <region> <threshold> <minutes>` to create one.'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
 
@@ -631,16 +796,14 @@ async function handleWatchCommand(message, args) {
     const embed = new EmbedBuilder()
       .setTitle('Active Lobby Watches')
       .setDescription(`Alert channel: ${channelText}`)
-      .setColor(0xCCCCCC);
+      .setColor(ORANGE);
 
     for (const [id, watch] of cfg.watches.entries()) {
       const lobbyDef = LOBBIES.find(l => l.key === watch.lobbyKey);
       const lobbyLabel = lobbyDef ? lobbyDef.label : watch.lobbyKey;
-      const last = watch.lastAlertAt
-        ? watch.lastAlertAt.toISOString()
-        : 'never';
+      const last = watch.lastAlertAt ? watch.lastAlertAt.toISOString() : 'never';
       embed.addFields({
-        name: `ID ${id} - ${lobbyLabel}`,
+        name: `${lobbyLabel} (ID ${id})`,
         value: `Threshold: ${watch.threshold} players\nInterval: ${watch.intervalMinutes} minute(s)\nLast alert: ${last}`,
         inline: false
       });
@@ -652,37 +815,61 @@ async function handleWatchCommand(message, args) {
 
   if (sub === 'remove') {
     if (args.length < 2) {
-      await message.reply('Usage: `,watch remove <id>`');
+      const embed = new EmbedBuilder()
+        .setTitle('Usage')
+        .setDescription('` ,watch remove <id> `')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     const id = parseInt(args[1], 10);
     if (!cfg.watches.has(id)) {
-      await message.reply(
-        `No watch found with ID ${id}.\nUse \`,watch list\` to see all active watches.`
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Watch not found')
+        .setDescription(
+          `No watch found with ID ${id}.\nUse \`,watch list\` to see all active watches.`
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     cfg.watches.delete(id);
-    await message.reply(`Watch ${id} removed.`);
+    const embed = new EmbedBuilder()
+      .setTitle('Watch removed')
+      .setDescription(`Watch ${id} removed.`)
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   if (sub === 'clear') {
     if (cfg.watches.size === 0) {
-      await message.reply('There are no watches to clear.');
+      const embed = new EmbedBuilder()
+        .setTitle('No watches to clear')
+        .setDescription('There are no watches to clear.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     cfg.watches.clear();
-    await message.reply('All watches have been cleared for this server.');
+    const embed = new EmbedBuilder()
+      .setTitle('Watches cleared')
+      .setDescription('All watches have been cleared for this server.')
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
-  await message.reply(
-    'Unknown subcommand.\nUsage: `,watch add`, `,watch list`, `,watch remove`, `,watch clear`'
-  );
+  const embed = new EmbedBuilder()
+    .setTitle('Unknown subcommand')
+    .setDescription(
+      'Usage: `,watch add`, `,watch list`, `,watch remove`, `,watch clear`'
+    )
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
 }
 
-// ----- ,config command (optional simple default-region) -----
+// ----- ,config command (default-region + ping role) -----
 async function handleConfigCommand(message, args) {
   const guildId = message.guild.id;
   const cfg = getGuildConfig(guildId);
@@ -692,19 +879,23 @@ async function handleConfigCommand(message, args) {
   if (!sub) {
     const channelText = cfg.alertChannelId ? `<#${cfg.alertChannelId}>` : 'not set';
     const defaultRegion = cfg.defaultRegion || 'not set';
+    const pingRoleText = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+
     const embed = new EmbedBuilder()
       .setTitle('Bot Configuration')
       .setDescription(
         [
           `Default region: ${defaultRegion}`,
           `Alert channel: ${channelText}`,
+          `Ping role: ${pingRoleText}`,
           '',
           'Commands:',
           '  ,config default-region <us|eu>',
+          '  ,config setrole @role',
           '  ,alert channel #channel'
         ].join('\n')
       )
-      .setColor(0xCCCCCC);
+      .setColor(ORANGE);
     await message.reply({ embeds: [embed] });
     return;
   }
@@ -712,19 +903,51 @@ async function handleConfigCommand(message, args) {
   if (sub === 'default-region') {
     const region = (args[1] || '').toLowerCase();
     if (!['us', 'eu'].includes(region)) {
-      await message.reply(
-        'Invalid region. Region must be "us" or "eu".\nExample: `,config default-region us`'
-      );
+      const embed = new EmbedBuilder()
+        .setTitle('Invalid region')
+        .setDescription(
+          'Region must be "us" or "eu".\nExample: `,config default-region us`'
+        )
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
       return;
     }
     cfg.defaultRegion = region;
-    await message.reply(`Default region set to ${region.toUpperCase()}.`);
+    const embed = new EmbedBuilder()
+      .setTitle('Default region set')
+      .setDescription(`Default region set to ${region.toUpperCase()}.`)
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
     return;
   }
 
-  await message.reply(
-    'Unknown subcommand.\nUsage: `,config default-region <us|eu>`'
-  );
+  if (sub === 'setrole') {
+    const role = message.mentions.roles.first();
+    if (!role) {
+      cfg.pingRoleId = null;
+      const embed = new EmbedBuilder()
+        .setTitle('Ping role cleared')
+        .setDescription('Ping role cleared. No ping role given.')
+        .setColor(ORANGE);
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+    cfg.pingRoleId = role.id;
+    const embed = new EmbedBuilder()
+      .setTitle('Ping role set')
+      .setDescription(`Ping role set to ${role}.`)
+      .setColor(ORANGE);
+    await message.reply({ embeds: [embed] });
+    return;
+  }
+
+  const embed = new EmbedBuilder()
+    .setTitle('Unknown subcommand')
+    .setDescription(
+      'Usage: `,config default-region <us|eu>`, `,config setrole @role`'
+    )
+    .setColor(ORANGE);
+  await message.reply({ embeds: [embed] });
 }
 
 // ----- Polling loop for join alerts and watches -----
@@ -753,6 +976,8 @@ async function processJoinAlerts() {
 
     const channel = guild.channels.cache.get(cfg.alertChannelId);
     if (!channel || !channel.isTextBased()) continue;
+
+    const pingContent = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
 
     for (const lobby of LOBBIES) {
       const key = lobby.key;
@@ -787,21 +1012,29 @@ async function processJoinAlerts() {
       if (newJoins.length === 1) {
         const p = newJoins[0];
         const name = p.name || p.privyId || p.id || 'Unknown';
-        await channel.send(
-          `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby. Lobby players: ${snapshot.playerCount}.`
-        );
+        const embed = new EmbedBuilder()
+          .setTitle('Lobby Join')
+          .setDescription(
+            `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby.\nLobby players: ${snapshot.playerCount}.`
+          )
+          .setColor(ORANGE);
+        await channel.send({ content: pingContent, embeds: [embed] });
       } else {
         const names = newJoins
           .map(p => p.name || p.privyId || p.id || 'Unknown')
           .map(n => `• ${n}`)
           .join('\n');
-        await channel.send(
-          [
-            `New joins in ${lobby.region.toUpperCase()} $${lobby.lobby} lobby:`,
-            names,
-            `Lobby players: ${snapshot.playerCount}.`
-          ].join('\n')
-        );
+        const embed = new EmbedBuilder()
+          .setTitle('Lobby Joins')
+          .setDescription(
+            [
+              `New joins in ${lobby.region.toUpperCase()} $${lobby.lobby} lobby:`,
+              names,
+              `Lobby players: ${snapshot.playerCount}.`
+            ].join('\n')
+          )
+          .setColor(ORANGE);
+        await channel.send({ content: pingContent, embeds: [embed] });
       }
     }
   }
@@ -819,6 +1052,8 @@ async function processWatches() {
     const channel = guild.channels.cache.get(cfg.alertChannelId);
     if (!channel || !channel.isTextBased()) continue;
 
+    const pingContent = cfg.pingRoleId ? `<@&${cfg.pingRoleId}>` : 'No ping role given';
+
     for (const [id, watch] of cfg.watches.entries()) {
       const lobbyDef = LOBBIES.find(l => l.key === watch.lobbyKey);
       if (!lobbyDef) continue;
@@ -833,13 +1068,16 @@ async function processWatches() {
       const lastMs = watch.lastAlertAt ? watch.lastAlertAt.getTime() : 0;
 
       if (!watch.lastAlertAt || now - lastMs >= intervalMs) {
-        await channel.send(
-          [
-            `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${playerCount} players.`,
-            `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`,
-            `(Watch ID ${id})`
-          ].join('\n')
-        );
+        const embed = new EmbedBuilder()
+          .setTitle('Lobby Watch Alert')
+          .setDescription(
+            [
+              `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${playerCount} players.`,
+              `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
+            ].join('\n')
+          )
+          .setColor(ORANGE);
+        await channel.send({ content: pingContent, embeds: [embed] });
         watch.lastAlertAt = new Date();
       }
     }
