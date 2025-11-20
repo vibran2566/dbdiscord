@@ -220,14 +220,19 @@ client.on('messageCreate', async (message) => {
 
   try {
     if (command === 'lb') {
-      await handleLbCommand(message, args);
-    } else if (command === 'alert') {
-      await handleAlertCommand(message, args);
-    } else if (command === 'watch') {
-      await handleWatchCommand(message, args);
-    } else if (command === 'config') {
-      await handleConfigCommand(message, args);
-    }
+  await handleLbCommand(message, args);
+} else if (command === 'us') {
+  await handleRegionSummaryCommand(message, 'us');
+} else if (command === 'eu') {
+  await handleRegionSummaryCommand(message, 'eu');
+} else if (command === 'alert') {
+  await handleAlertCommand(message, args);
+} else if (command === 'watch') {
+  await handleWatchCommand(message, args);
+} else if (command === 'config') {
+  await handleConfigCommand(message, args);
+}
+
   } catch (err) {
     console.error('Command handler error:', err);
     await message.reply('Something went wrong handling that command.');
@@ -289,7 +294,7 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
 
   const headerLines = [
     `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
-    `Players in lobby: ${snapshot.playerCount}`,
+    `Players in lobby: ${players.length}`,
     solPriceStatusLine(),
     `Page ${currentPage + 1}/${totalPages}`
   ];
@@ -422,6 +427,65 @@ async function handleLbCommand(message, args) {
 
   const { embed, components } = buildLbEmbed(lobbyDef, snapshot, players, 0);
   await message.reply({ embeds: [embed], components });
+}
+async function handleRegionSummaryCommand(message, region) {
+  // which lobbies to show
+  const lobbyNumbers = region === 'us' ? [1, 5, 20] : [1, 20]; // skip EU 5 (no API)
+  const embeds = [];
+
+  for (const lobbyNum of lobbyNumbers) {
+    const lobbyDef = findLobby(region, lobbyNum);
+    if (!lobbyDef || !lobbyDef.url) continue; // skip no-API lobby
+
+    const snapshot = await getLobbySnapshot(lobbyDef);
+    if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
+
+    // only players with size > 3, sorted by USD desc
+    const activePlayers = snapshot.players
+      .filter(p => typeof p.size === 'number' && p.size > 3)
+      .sort((a, b) => {
+        const usdA = typeof a.usdFromSol === 'number' ? a.usdFromSol : 0;
+        const usdB = typeof b.usdFromSol === 'number' ? b.usdFromSol : 0;
+        return usdB - usdA;
+      });
+
+    const top5 = activePlayers.slice(0, 5);
+
+    const lines = top5.map((p, idx) => {
+      const rank = idx + 1;
+      const name = p.name || p.privyId || p.id || 'Unknown';
+      const usd =
+        typeof p.usdFromSol === 'number'
+          ? `$${p.usdFromSol.toFixed(2)}`
+          : '(price unavailable)';
+      return `#${rank} ${name} - ${usd}`;
+    });
+
+    const embed = new EmbedBuilder()
+      .setTitle(`${lobbyDef.label} Lobby Leaderboard`)
+      .setColor(ORANGE)
+      .setDescription(
+        [
+          `Lobby: $${lobbyDef.lobby}   Region: ${region.toUpperCase()}`,
+          `Players in lobby: ${activePlayers.length}`, // size > 3 only
+          '',
+          lines.length ? lines.join('\n') : 'No active players with size > 3.'
+        ].join('\n')
+      );
+
+    embeds.push(embed);
+  }
+
+  if (embeds.length === 0) {
+    const embed = new EmbedBuilder()
+      .setTitle(region === 'us' ? 'US Lobby Summary' : 'EU Lobby Summary')
+      .setColor(ORANGE)
+      .setDescription('No lobby data available right now.');
+    await message.reply({ embeds: [embed] });
+  } else {
+    // one message, multiple boxes (one per lobby)
+    await message.reply({ embeds });
+  }
 }
 
 // ----- ,alert command -----
