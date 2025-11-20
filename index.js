@@ -291,7 +291,6 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
     `Lobby: $${lobbyDef.lobby}   Region: ${lobbyDef.region.toUpperCase()}`,
     `Players in lobby: ${snapshot.playerCount}`,
     solPriceStatusLine(),
-    `Data pulled: ${new Date(snapshot.lastFetched || Date.now()).toISOString()}`,
     `Page ${currentPage + 1}/${totalPages}`
   ];
 
@@ -317,7 +316,6 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
       });
     });
 
-    embed.setFooter({ text: 'Players with size = 0 or <= 3 are hidden' });
   }
 
   const components = [];
@@ -355,26 +353,6 @@ async function handleLbCommand(message, args) {
       .setDescription(
         [
           'Usage: `,lb <lobby> <region>`',
-          '',
-          'Lobby:',
-          '  1  - $1 lobby',
-          '  5  - $5 lobby',
-          '  20 - $20 lobby',
-          '',
-          'Region:',
-          '  us - US servers',
-          '  eu - EU servers',
-          '',
-          'Examples:',
-          '  ,lb 1 us',
-          '  ,lb 5 eu',
-          '  ,lb 20 us',
-          '',
-          'Notes:',
-          '  • Players with size ≤ 3 are ignored',
-          '  • Shows USD value converted from SOL',
-          '',
-          solPriceStatusLine()
         ].join('\n')
       )
       .setColor(ORANGE);
@@ -464,22 +442,6 @@ async function handleAlertCommand(message, args) {
           '  `,alert channel #channel`',
           '  `,alert list`',
           '  `,alert status`',
-          '',
-          'Lobby:',
-          '  1  - $1 lobby',
-          '  5  - $5 lobby',
-          '  20 - $20 lobby',
-          '',
-          'Region:',
-          '  us - US servers',
-          '  eu - EU servers',
-          '',
-          'Examples:',
-          '  ,alert on 20 us',
-          '  ,alert off 5 eu',
-          '  ,alert channel #damnbruh-alerts',
-          '  ,alert list',
-          ''
         ].join('\n')
       )
       .setFooter({ text: 'Alerts ping when someone joins that lobby' })
@@ -685,10 +647,6 @@ async function handleWatchCommand(message, args) {
           '  `,watch list`',
           '  `,watch remove <id>`',
           '  `,watch clear`',
-          '',
-          'Examples:',
-          '  ,watch add 5 us 6 2',
-          '  ,watch list'
         ].join('\n')
       )
       .setColor(ORANGE);
