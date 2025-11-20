@@ -908,8 +908,7 @@ async function handleWatchCommand(message, args) {
   const cfg = getGuildConfig(guildId);
 
   const sub = (args[0] || '').toLowerCase();
-
-   if (!sub) {
+  if (!sub) {
     const embed = new EmbedBuilder()
       .setTitle('Lobby Watchers')
       .setDescription(
