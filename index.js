@@ -1333,9 +1333,11 @@ async function processJoinAlerts() {
         }
       }
 
-      cfg.lastSeenPlayers[key] = currentIds;
+            cfg.lastSeenPlayers[key] = currentIds;
 
       if (newJoins.length === 0) continue;
+
+      const timeStr = formatEtTime(new Date());
 
       if (newJoins.length === 1) {
         const p = newJoins[0];
@@ -1343,7 +1345,9 @@ async function processJoinAlerts() {
         const embed = new EmbedBuilder()
           .setTitle('Lobby Join')
           .setDescription(
-            `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby.\nLobby players: ${activeCount}.`
+            `${name} joined ${lobby.region.toUpperCase()} $${lobby.lobby} lobby.\n` +
+            `Lobby players: ${activeCount}.\n` +
+            `${timeStr}`
           )
           .setColor(ORANGE);
         await channel.send({ content: pingContent, embeds: [embed] });
@@ -1358,12 +1362,14 @@ async function processJoinAlerts() {
             [
               `New joins in ${lobby.region.toUpperCase()} $${lobby.lobby} lobby:`,
               names,
-              `Lobby players: ${activeCount}.`
+              `Lobby players: ${activeCount}.`,
+              `${timeStr}`
             ].join('\n')
           )
           .setColor(ORANGE);
         await channel.send({ content: pingContent, embeds: [embed] });
       }
+
     }
   }
 }
@@ -1402,19 +1408,23 @@ async function processWatches() {
       const intervalMs = watch.intervalMinutes * 60 * 1000;
       const lastMs = watch.lastAlertAt ? watch.lastAlertAt.getTime() : 0;
 
-      if (!watch.lastAlertAt || now - lastMs >= intervalMs) {
+            if (!watch.lastAlertAt || now - lastMs >= intervalMs) {
+        const timeStr = formatEtTime(now);
+
         const embed = new EmbedBuilder()
           .setTitle('Lobby Watch Alert')
           .setDescription(
             [
               `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${activeCount} players.`,
-              `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
+              `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`,
+              `${timeStr}`
             ].join('\n')
           )
           .setColor(ORANGE);
         await channel.send({ content: pingContent, embeds: [embed] });
         watch.lastAlertAt = new Date();
       }
+
     }
   }
 }
