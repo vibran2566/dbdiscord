@@ -908,6 +908,8 @@ async function handleWatchCommand(message, args) {
   const cfg = getGuildConfig(guildId);
 
   const sub = (args[0] || '').toLowerCase();
+
+  // ,watch  -> short help
   if (!sub) {
     const embed = new EmbedBuilder()
       .setTitle('Lobby Watchers')
@@ -927,43 +929,7 @@ async function handleWatchCommand(message, args) {
     return;
   }
 
-
-const embed = new EmbedBuilder()
-  .setTitle('Bot Configuration')
-  .setDescription(
-    [
-      `Default region: ${defaultRegion}`,
-      `Alert channel: ${channelText}`,
-      `Refresh channel: ${refreshChannelText}`,
-      `Ping role: ${pingRoleText}`,
-      '',
-      'Commands:',
-      '  ,config default-region <us|eu>',
-      '  ,config setrole @role',
-      '  ,config refresh channel #channel',
-      '  ,alert channel #channel'
-    ].join('\n')
-  )
-  .setColor(ORANGE);
-
-    const embed = new EmbedBuilder()
-      .setTitle('Lobby Watchers')
-      .setDescription(
-        [
-          'Watch set (minutes)',
-          '',
-          'Usage:',
-          '  `,watch add <lobby> <region> <threshold> <minutes>`',
-          '  `,watch list`',
-          '  `,watch remove <id>`',
-          '  `,watch clear`',
-        ].join('\n')
-      )
-      .setColor(ORANGE);
-    await message.reply({ embeds: [embed] });
-    return;
-  }
-
+  // ,watch add <lobby> <region> <threshold> <minutes>
   if (sub === 'add') {
     if (args.length < 5) {
       const embed = new EmbedBuilder()
@@ -1054,6 +1020,7 @@ const embed = new EmbedBuilder()
     return;
   }
 
+  // ,watch list
   if (sub === 'list') {
     if (cfg.watches.size === 0) {
       const embed = new EmbedBuilder()
@@ -1087,6 +1054,7 @@ const embed = new EmbedBuilder()
     return;
   }
 
+  // ,watch remove <id>
   if (sub === 'remove') {
     if (args.length < 2) {
       const embed = new EmbedBuilder()
@@ -1117,6 +1085,7 @@ const embed = new EmbedBuilder()
     return;
   }
 
+  // ,watch clear
   if (sub === 'clear') {
     if (cfg.watches.size === 0) {
       const embed = new EmbedBuilder()
@@ -1136,6 +1105,7 @@ const embed = new EmbedBuilder()
     return;
   }
 
+  // anything else
   const embed = new EmbedBuilder()
     .setTitle('Unknown subcommand')
     .setDescription(
@@ -1144,6 +1114,7 @@ const embed = new EmbedBuilder()
     .setColor(ORANGE);
   await message.reply({ embeds: [embed] });
 }
+
 
 // ----- ,config command (default-region + ping role) -----
 async function handleConfigCommand(message, args) {
