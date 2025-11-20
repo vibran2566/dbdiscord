@@ -299,20 +299,23 @@ function buildLbEmbed(lobbyDef, snapshot, players, page) {
     embed.setDescription(headerLines.join('\n') + '\n\nNo active players with size > 3.');
   } else {
     embed.setDescription(headerLines.join('\n'));
+
     pagePlayers.forEach((p, index) => {
       const rank = start + index + 1;
       const name = p.name || p.privyId || p.id || 'Unknown';
-      const roundedSize = Math.round(p.size); // size to ones place
-const usdDisplay =
-  typeof p.usdFromSol === 'number'
-    ? `$${p.usdFromSol.toFixed(2)}` // USD to hundredths
-    : '(price unavailable)';
 
-embed.addFields({
-  name: `#${rank} ${name}`,
-  value: `Size: ${roundedSize}\nUSD: ${usdDisplay}`,
-  inline: false
-});
+      const roundedSize = Math.round(p.size); // size to ones place
+      const usdDisplay =
+        typeof p.usdFromSol === 'number'
+          ? `$${p.usdFromSol.toFixed(2)}` // USD to 0.01
+          : '(price unavailable)';
+
+      embed.addFields({
+        name: `#${rank} ${name}`,
+        value: `Size: ${roundedSize}\nUSD: ${usdDisplay}`,
+        inline: false
+      });
+    });
 
     embed.setFooter({ text: 'Players with size = 0 or <= 3 are hidden' });
   }
@@ -986,22 +989,23 @@ async function processJoinAlerts() {
       if (!cfg.alertEnabled[key]) continue;
 
       const snapshot = lobbyCache.get(key);
-if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
+      if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
 
-// Only consider players with size > 3
-const activePlayers = snapshot.players.filter(
-  p => typeof p.size === 'number' && p.size > 3
-);
-if (activePlayers.length === 0) {
-  // no active players, reset last seen and skip
-  cfg.lastSeenPlayers[key] = new Set();
-  continue;
-}
+      // Only consider "real" players with size > 3
+      const activePlayers = snapshot.players.filter(
+        p => typeof p.size === 'number' && p.size > 3
+      );
+      const activeCount = activePlayers.length;
 
-const currentIds = new Set(
-  activePlayers.map(p => p.privyId || p.id).filter(Boolean)
-);
+      if (activeCount === 0) {
+        // no active players, reset last seen and skip
+        cfg.lastSeenPlayers[key] = new Set();
+        continue;
+      }
 
+      const currentIds = new Set(
+        activePlayers.map(p => p.privyId || p.id).filter(Boolean)
+      );
 
       if (!cfg.lastSeenPlayers[key]) {
         cfg.lastSeenPlayers[key] = new Set();
@@ -1012,9 +1016,8 @@ const currentIds = new Set(
       for (const id of currentIds) {
         if (!lastSet.has(id)) {
           const player = activePlayers.find(
-  p => (p.privyId || p.id) === id
-);
-
+            p => (p.privyId || p.id) === id
+          );
           if (player) newJoins.push(player);
         }
       }
@@ -1044,7 +1047,7 @@ const currentIds = new Set(
             [
               `New joins in ${lobby.region.toUpperCase()} $${lobby.lobby} lobby:`,
               names,
-              `Lobby players: ${snapshot.playerCount}.`
+              `Lobby players: ${activeCount}.`
             ].join('\n')
           )
           .setColor(ORANGE);
@@ -1053,6 +1056,7 @@ const currentIds = new Set(
     }
   }
 }
+
 
 async function processWatches() {
   const now = Date.now();
@@ -1073,15 +1077,14 @@ async function processWatches() {
       if (!lobbyDef) continue;
 
       const snapshot = lobbyCache.get(watch.lobbyKey);
-if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
+      if (!snapshot || snapshot.noApi || !Array.isArray(snapshot.players)) continue;
 
-// Only count players with size > 3
-const activeCount = snapshot.players.filter(
-  p => typeof p.size === 'number' && p.size > 3
-).length;
+      // Only count players with size > 3
+      const activeCount = snapshot.players.filter(
+        p => typeof p.size === 'number' && p.size > 3
+      ).length;
 
-if (activeCount < watch.threshold) continue;
-
+      if (activeCount < watch.threshold) continue;
 
       const intervalMs = watch.intervalMinutes * 60 * 1000;
       const lastMs = watch.lastAlertAt ? watch.lastAlertAt.getTime() : 0;
@@ -1092,8 +1095,7 @@ if (activeCount < watch.threshold) continue;
           .setDescription(
             [
               `${lobbyDef.region.toUpperCase()} $${lobbyDef.lobby} lobby has ${activeCount} players.`,
-`Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
-
+              `Threshold: ${watch.threshold}. Interval: ${watch.intervalMinutes} minute(s).`
             ].join('\n')
           )
           .setColor(ORANGE);
@@ -1103,6 +1105,7 @@ if (activeCount < watch.threshold) continue;
     }
   }
 }
+
 
 // ----- Start the bot -----
 const token = process.env.DISCORD_TOKEN;
