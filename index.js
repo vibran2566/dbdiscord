@@ -34,35 +34,35 @@ const LOBBIES = [
     region: 'us',
     lobby: 1,
     label: 'US $1',
-    url: 'https://damnbruh-game-server-instance-1-us.onrender.com/players'
+    url: 'https://damnbruh-us-1.fly.dev/players'
   },
   {
     key: 'us-5',
     region: 'us',
     lobby: 5,
     label: 'US $5',
-    url: 'https://damnbruh-game-server-instance-5-us.onrender.com/players'
+    url: 'https://damnbruh-us-5.fly.dev/players'
   },
   {
     key: 'us-20',
     region: 'us',
     lobby: 20,
     label: 'US $20',
-    url: 'https://damnbruh-game-server-instance-20-us.onrender.com/players'
+    url: 'https://damnbruh-us-20.fly.dev/players'
   },
   {
     key: 'eu-1',
     region: 'eu',
     lobby: 1,
     label: 'EU $1',
-    url: 'https://damnbruh-game-server-instance-1-eu.onrender.com/players'
+    url: 'https://damnbruh-eu-1.fly.dev/players'
   },
   {
     key: 'eu-5',
     region: 'eu',
     lobby: 5,
     label: 'EU $5',
-    url: null, // no API for this server
+    url: 'https://damnbruh-eu-5.fly.dev/players'
     noApi: true
   },
   {
@@ -70,7 +70,7 @@ const LOBBIES = [
     region: 'eu',
     lobby: 20,
     label: 'EU $20',
-    url: 'https://damnbruh-game-server-instance-20-eu.onrender.com/players'
+    url: 'https://damnbruh-eu-20.fly.dev/players'
   }
 ];
 
