@@ -62,7 +62,7 @@ const LOBBIES = [
     region: 'eu',
     lobby: 5,
     label: 'EU $5',
-    url: 'https://damnbruh-eu-5.fly.dev/players'
+    url: null
     noApi: true
   },
   {
