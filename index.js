@@ -29,7 +29,7 @@ const CONFIG_PATH =
 
 // ----- Lobbies definition -----
 const LOBBIES = [
-  {
+ {
     key: 'us-1',
     region: 'us',
     lobby: 1,
@@ -62,7 +62,7 @@ const LOBBIES = [
     region: 'eu',
     lobby: 5,
     label: 'EU $5',
-    url: null
+    url: null, // no API for this server
     noApi: true
   },
   {
